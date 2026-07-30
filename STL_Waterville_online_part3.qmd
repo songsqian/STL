@@ -1,0 +1,410 @@
+---
+title: "STL analysis of Waterville monitoring data -- Part III: Figures for the manuscript"
+author: "Song Qian"
+format: pdf
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Introduction
+
+STL analysis of long-term nutrient monitoring data from Heidelberg University. Data retrieved from National Center for Water Quality Research: <https://ncwqr.org/> and processed in Part I. Two STL functions are in Part II
+
+### Front matters
+
+Setting up proper file paths, defining some useful functions, and loading necessary packages
+
+```{r}
+#| label: Front_Matter 
+#| include: false
+#| eval: true
+#| echo: false
+#| message: false
+packages<-function(x, repos="http://cran.r-project.org", ...){
+      x<-as.character(match.call()[[2]])
+      if (!require(x,character.only=TRUE)){
+        install.packages(pkgs=x, repos=repos, ...)
+        require(x,character.only=TRUE)
+      }
+    }
+
+base <- getwd()
+dataDIR <- paste(base, "Data", sep="/")
+    ## put your data set in the Data subdirectory
+plotDIR <- paste(base, "Figs", sep="/")
+    ## put created figures in the Figures subdirectory
+    ##setwd(base)
+
+packages(lattice)
+packages(arm)
+packages(zoo)
+    ##packages(maps)
+packages(tikzDevice)
+packages(tidyverse)
+
+packages(foreign)
+data.restore (paste(dataDIR, "visualizing.data", sep="/"))
+
+median.polish.ts <- function(data.ts, ylab="", plt=T){
+			  # median polishing for missing value imputation
+  medpolish(matrix(data.ts, ncol=12, byrow=T), eps=0.001, na.rm=T)->temp.2w
+  print(names(temp.2w))
+  year.temp <- rep(seq(start(data.ts)[1], end(data.ts)[1]), each=12)
+  month.temp <- rep(1:12, length(seq(start(data.ts)[1], end(data.ts)[1])))
+					  # plotting median polishing results
+  if (plt){
+    par(mfrow=c(2,1))
+    plot(seq(start(data.ts)[1], end(data.ts)[1]),
+    temp.2w$overall+temp.2w$row, type="l",
+    xlab="Year", ylab=ylab, main="De-seasonalized Trend")
+    plot(seq(1,12), temp.2w$overall+temp.2w$col, type="l",
+    xlab="Month", ylab=ylab, main="Seasonal Changes")
+  }
+  data.ts[is.na(data.ts)]<-temp.2w$overall +
+    temp.2w$row[year.temp[is.na(data.ts)]-start(data.ts)[1]+1]+
+    temp.2w$col[month.temp[is.na(data.ts)]]
+    data.ts[is.na(data.ts)]<-temp.2w$overall
+  invisible(data.ts)
+}
+
+## water year conversion function
+water_year <- function(d) {
+  start_year <- ifelse(as.integer(format(d, "%m")) < 10,
+    as.integer(format(d, "%Y")) - 1,
+    as.integer(format(d, "%Y"))
+    )
+  water_year <- ifelse(as.integer(format(d, "%m"))>=10,
+    as.integer(format(d, "%Y")) + 1,
+    as.integer(format(d, "%Y"))
+    )
+  return (data.frame(water_year=water_year,
+                     wy_date=as.integer(
+                       difftime(d, as.Date(paste0(start_year,
+                                                  "-10-01")),
+                                units="day")+1)))
+}
+
+load(paste(dataDIR, "savedWVL.RData", sep="/"))
+load(paste(dataDIR, "savedLoadings.RData", sep="/"))
+load(paste(dataDIR, "stlFunctions.RData", sep="/"))
+```
+
+## Summarizing P and N loadings to WLE
+
+```{r}
+#| label: figure_2
+#| fig-width: 7.25
+#| fig-height: 4.25
+
+
+wvl.daily <- cbind(wvl.daily, water_year(wvl.daily$Rdate))
+  ## Water year annual loading and spring loading
+  ## annual
+TPloadings <- tapply(wvl.daily$TPLoad, wvl.daily$water_year, sum)
+SRPloadings <- tapply(wvl.daily$SRPLoad, wvl.daily$water_year, sum)
+TNloadings <- tapply(wvl.daily$TNLoad, wvl.daily$water_year, sum)
+
+## spring
+spring <- wvl.daily$Month == "Mar" |
+          wvl.daily$Month == "Apr" |
+          wvl.daily$Month == "May" |
+          wvl.daily$Month == "Jun" |
+          wvl.daily$Month == "Jul"
+
+TPL_spring <- tapply(wvl.daily$TPLoad[spring], 
+                     wvl.daily$water_year[spring], sum)
+SRPL_spring <- tapply(wvl.daily$SRPLoad[spring], 
+                      wvl.daily$water_year[spring], sum)
+TNL_spring <- tapply(wvl.daily$TNLoad[spring], wvl.daily$water_year[spring], 
+                     sum)
+
+TPfrct <- TPL_spring/TPloadings
+SRPfrct <- SRPL_spring/SRPloadings
+TNfrct <- TNL_spring/TNloadings
+
+TPLoads <- data.frame(Loadings=c(TPL_spring, TPloadings[-44])/1000,
+                      years=rep(as.numeric(names(TPL_spring)), 2),
+                      type=rep(c("Spring","Annual"), each=length(TPL_spring)),
+                      frct=TPL_spring/TPloadings)
+SRPLoads <- data.frame(Loadings=c(SRPL_spring, SRPloadings[-44])/1000,
+                      years=rep(as.numeric(names(SRPL_spring)), 2),
+                      type=rep(c("Spring","Annual"), each=length(SRPL_spring)),
+                      frct=SRPL_spring/SRPloadings)
+#Frcts <- data.frame(frct=c(TPL_spring/TPloadings, severe),
+#                    index=c(rep("Fraction", length(TPL_spring)),
+#                            rep("Index", length(severe))),
+#                    years=c(as.numeric(names(TPL_spring)), ))
+
+fig1a <- xyplot(Loadings ~ years, 
+       panel=function(x,y, ...){
+         panel.xyplot(x, y, cex=0.5, ...)
+         panel.text(min(x), max(y), "(a)", adj = c(0, 1), 
+                    cex=0.7)
+         panel.abline(h=860, col="gray")
+       },
+       data=TPLoads, group=type, type="b",
+       xlab=list(label="Water Year", cex=0.6), 
+       ylab=list(label="TP Loading (1000 kg)", cex=0.75),
+       scales=list(cex=0.7),
+       par.setting=list(fontsize=list(text=10)))#,
+##       key=simpleKey(levels(as.factor(TPLoads$type)),
+##                     lines=T, points=F, corner=c(0,1), 
+##                     x=0.1, y=0.95, columns=1, cex=0.6))
+
+fig1b <- xyplot(frct~years, 
+                data=TPLoads[TPLoads$type=="Spring",], 
+       panel=function(x, y, ...){
+         panel.xyplot(x, y, cex=0.5, ...)
+         panel.loess(x, y, span=0.65, ...)
+         panel.text(min(x), max(y), "(c)", adj = c(0, 1), 
+                    cex=0.7)},
+              scales=list(cex=0.7),
+       par.setting=list(fontsize=list(text=10)),
+       xlab=list(label="Water Year", cex=0.6), 
+       ylab=list(label="Spring TP loading fraction", cex=0.75)
+       )
+
+fig1c <- xyplot(Loadings ~ years, 
+       panel=function(x,y, ...){
+         panel.xyplot(x, y, cex=0.5, ...)
+         panel.text(min(x), max(y), "(b)", adj = c(0, 1), 
+                    cex=0.7)
+         panel.abline(h=186, col="gray")
+       },
+       data=SRPLoads, group=type, type="b",
+       xlab=list(label="Water Year", cex=0.6), 
+       ylab=list(label="SRP Loading (1000 kg)", cex=0.75),
+       scales=list(cex=0.7),
+       par.setting=list(fontsize=list(text=10)),
+       key=simpleKey(levels(as.factor(TPLoads$type)),
+                     lines=T, points=F, corner=c(0,1), 
+                     x=0.025, y=0.85, columns=1, cex=0.6))
+
+fig1d <- xyplot(frct~years, 
+                data=SRPLoads[SRPLoads$type=="Spring",], 
+       panel=function(x, y, ...){
+         panel.xyplot(x, y, cex=0.5, ...)
+         panel.loess(x, y, span=0.65, ...)
+         panel.text(min(x), max(y), "(d)", adj = c(0, 1), 
+                    cex=0.7)},
+              scales=list(cex=0.7),
+       par.setting=list(fontsize=list(text=10)),
+       xlab=list(label="Water Year", cex=0.6), 
+       ylab=list(label="Spring SRP loading fraction", cex=0.75)
+       )
+
+##tikz(file="TPLoadings_f1.tex", height=4.25, width=7.25, 
+##     standAlone = F)
+print(fig1a, position=c(0,0.425,0.5,1), more=T)
+print(fig1b, position=c(0,0,0.5,0.575), more=T)
+print(fig1c, position=c(0.5,0.425,1,1), more=T)
+print(fig1d, position=c(0.5,0,1,0.575), more=F)
+##dev.off()
+```
+
+Other figures not used
+
+```{r}
+#| label: other_figure
+#| fig-height: 4
+#| fig-width: 5
+plot(as.numeric(names(TPL_spring)), TPL_spring / TPloadings)
+abline(h=0.75)
+abline(v=2014)
+
+plot(as.numeric(names(TPL_spring)),  TPloadings/1000,
+     ylim=range(c(TPL_spring,  TPloadings))/1000,
+     xlab="Water Year", ylab="Total TP Loading (1000 kg)")
+points(as.numeric(names(TPL_spring)), TPL_spring/1000, col="red")
+       legend("topleft", pch=c(1,1), col=c("black", "red"),
+              legend=c("Annual", "Spring"), bty="n")
+```
+
+## Fitting STL and Plotting
+
+- Illustrating the edge effect
+
+When using the flow data from January 1982 (the starting date of the water quality data), a few high flow events misrepresented the trend in the 1980s. The extreme high at the beginning the the trend is nothing but a small bump in the longer time series trend plot.
+
+```{r}
+#| label: Fig_3_edge_effect
+#| fig-width: 7
+#| fig-height: 5
+#| fig-cap: "A comparison of the STL estimated discharge long-term trent using the full USGS record (from 1940 to 2024, upper panel) and the same using the Heidelberg flow record started in 1982 (lower panel). The initial high in the lower panel near the early 1980s does not exist in the trend based on the full record."
+## Flow
+f_heidelberg <- STL_Mplots_online (Var = "Flow", TSm = Flow_ts_monthly, 
+                           TSd = Flow_ts_daily,
+    	                     aspect="xy", 
+                           ylab=list(label="Flow (m$^3$/s)", cex=0.8), 
+                           xlab=list(label="Year", cex=0.8),
+                           axes.cex = 0.7, Ylim=c(75,210), 
+                           ms.win=55, ss.deg=1, mt.win=135, tt.deg=1,
+  	                       ds.win=705, dt.win=3650, Log=F)$trend
+f_usgs <- STL_Mplots_online (Var = "Flow_usgs", TSm = Flow_ts_monthly_usgs, 
+                     TSd = Flow_ts_daily_usgs,
+    	               aspect="xy", 
+                     ylab=list(label="Flow (m$^3$/s)", cex=0.8), 
+                     xlab=list(label="Year", cex=0.8),
+                     axes.cex = 0.7, Ylim=c(75,210), 
+    	               ms.win=55, ss.deg=1, mt.win=135, tt.deg=1,
+  	                 ds.win=705, dt.win=3650, Log=F)$trend
+
+##tikz(paste(plotDIR, "fig_edge.tex", sep="/"), 
+##     height=5, width=7, standAlone = F)  	       
+print(f_usgs, position=c(0, 0.425, 1, 1), more = T)
+print(f_heidelberg, position=c(0.385, 0, 0.975, 0.55), more =F)
+##dev.off()
+```
+
+- Preparing for Figures 4-8  
+
+```{r}
+#| label: Figs_4-8
+#| eval: true
+#| 
+    ms_tploads <- STL_Mplots_online (Var = "TPLoad", TSm = TPLoad_ts_monthly, 
+                             TSd = TPLoad_ts_daily, aspect="xy",
+                             ylab=list(label="TP Loading (kg/day)", cex=0.8), 
+                             xlab=list(label="Year", cex=0.8),
+                      	     axes.cex = 0.7, Log=F,
+                             ms.win=55, ss.deg=1, 
+                             mt.win=135, tt.deg=1, ds.win=705, dt.win=3650)
+
+    ms_srploads <- STL_Mplots_online (Var = "SRPLoad", TSm = SRPLoad_ts_monthly,
+                              TSd = SRPLoad_ts_daily, aspect="xy",
+                              ylab=list(label="SRP Loading (kg/day)", cex=0.8), 
+                              xlab=list(label="Year", cex=0.8),
+                      	      axes.cex = 0.7,
+                              ms.win=55, ss.deg=1, 
+                              mt.win=135, tt.deg=1, ds.win=705, dt.win=3650,
+                              Log=F)
+
+    ms_tnloads <- STL_Mplots_online (Var = "TNLoad", TSm = TNLoad_ts_monthly,
+                              TSd = TNLoad_ts_daily, aspect="xy",
+                              ylab=list(label="TN Loading (kg/day)", cex=0.8), 
+                              xlab=list(label="Year", cex=0.8),
+                      	      axes.cex = 0.7,
+                              ms.win=55, ss.deg=1, 
+                              mt.win=135, tt.deg=1, ds.win=705, dt.win=3650,
+                              Log=F)
+    
+    ms_tnconc <- STL_Mplots_online (Var = "TN", TSm = TN_ts_monthly,
+                              TSd = TN_ts_daily, aspect="xy",
+                              ylab=list(label="TN (mg/L)", cex=0.8), 
+                              xlab=list(label="Year", cex=0.8),
+                      	      axes.cex = 0.7,
+                              ms.win=55, ss.deg=1, 
+                              mt.win=135, tt.deg=1, ds.win=705, dt.win=3650,
+                              Log=F)
+    
+    ms_tpconc <- STL_Mplots_online (Var = "TP", TSm = TP_ts_monthly,
+                              TSd = TP_ts_daily, aspect="xy",
+                              ylab=list(label="TP (mg/L)", cex=0.8), 
+                              xlab=list(label="Year", cex=0.8),
+                      	      axes.cex = 0.7,
+                              ms.win=55, ss.deg=1, 
+                              mt.win=135, tt.deg=1, ds.win=705, dt.win=3650,
+                              Log=F)
+    
+    ms_srpconc <- STL_Mplots_online (Var = "SRP", TSm = SRP_ts_monthly,
+                              TSd = SRP_ts_daily, aspect="xy",
+                              ylab=list(label="SRP (mg/L)", cex=0.8), 
+                              xlab=list(label="Year", cex=0.8),
+                      	      axes.cex = 0.7,
+                              ms.win=55, ss.deg=1, 
+                              mt.win=135, tt.deg=1, ds.win=705, dt.win=3650,
+                              Log=F)
+    
+    ms_flow <- STL_Mplots_online (Var = "Flow_usgs", 
+                          TSm = Flow_ts_monthly_usgs, 
+                          TSd = Flow_ts_daily_usgs,
+                          aspect="xy", 
+                          ylab=list(label="Flow (m$^3$/s)", cex=0.8),
+                          xlab=list(label="Year", cex=0.8),
+                   	      axes.cex = 0.7,
+                          ms.win=55, ss.deg=1, mt.win=135, tt.deg=1,
+                          ds.win=705, dt.win=3650, Log=F)
+
+    ms_precip <- STL_Mplots_online (Var = "Precipitation", TSm = TS_precip_monthly2,
+          	                TSd = TS_precip_daily,
+        	                  aspect="xy", 
+                    	      ylab=list(label="Precip (mm/day)", cex=0.8),
+        	                  xlab=list(label="Year", cex=0.8),
+                    	      axes.cex = 0.7,
+        	                  ms.win=55, ss.deg=1, mt.win=135, tt.deg=1,
+      	                    ds.win=705, dt.win=3650, Log=F)
+
+```
+
+- Figure 4 flow & precip trends
+
+```{r}
+#| label: figure_4
+#| fig-width: 4
+#| fig-height: 4.25
+
+##    tikz(paste(plotDIR, file="est_f2.tex", sep="/"), 
+##         height=4.25, width=4, standAlone = F)
+    print(ms_precip$trend, position = c(0.01, 0.415, 0.99, 1), more=T)
+    print(ms_flow$trend, position=c(0, 0, 1, 0.585), more=F)
+##    dev.off()
+```
+
+- Figure 5
+```{r}
+#| label: figure_5
+#| fig-width: 7
+#| fig-height: 5.75
+
+## Figure 5: precip ocs
+##    tikz(paste(plotDIR, "est_f4.tex", sep="/"),  
+##         height=5.75, width=7, standAlone=F)
+    print(ms_precip$seasonosc)
+##    dev.off()
+```    
+
+- Figure 6 TP & SRP & TN Loading trends
+
+```{r}
+#| label: figure_6
+#| fig-width: 4
+#| fig-height: 6.25
+
+##    tikz(paste(plotDIR, file="est_f3.tex", sep="/"), 
+##         height=6.25, width=4, standAlone = F)
+    print(ms_tploads$trend, position=c(0, 0.6, 1, 1), more=T)
+    print(ms_srploads$trend, position=c(0, 0.3, 1, 0.7), more=T)
+    print(ms_tnloads$trend, position=c(0, 0, 1, 0.4), more=F)
+##    dev.off()
+```
+
+- Figure 7 TP, SRP, TN concentrations
+
+```{r}
+#| label: figure_7
+#| fig-width: 4
+#| fig-height: 6.25
+##    tikz(paste(plotDIR, "est_conc.tex", sep="/"),  
+##         height=6.25, width=4, standAlone=F)
+    print(ms_tpconc$trend, position=c(0, 0.6, 1, 1), more=T)
+    print(ms_srpconc$trend, position=c(0, 0.3, 1, 0.7), more=T)
+    print(ms_tnconc$trend, position=c(0, 0, 1, 0.4), more=F)
+##    dev.off()
+```
+
+- Figure 8: TP/SRP ocs
+```{r}
+#| label: figure_8
+#| fig-width: 8
+#| fig-height: 5.75
+
+##    tikz(paste(plotDIR, "est_f5.tex", sep="/"),  
+##         height=5.75, width=8, standAlone=F)
+    print(ms_tploads$seasonosc,position=c(0, 0, 0.515, 1), more=T)
+    print(ms_srploads$seasonosc, position=c(0.485, 0, 1, 1), more=F)
+##    dev.off()
+    
+```
+
+## End of Part III

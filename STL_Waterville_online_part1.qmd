@@ -1,0 +1,423 @@
+---
+title: "STL analysis of Waterville monitoring data -- Part I: Data Processing"
+author: "Song Qian"
+format: pdf
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Introduction
+
+STL analysis of long-term nutrient monitoring data from Heidelberg University. Data retrieved from National Center for Water Quality Research: <https://ncwqr.org/>.
+
+### Front matters
+
+Setting up proper file paths, defining some useful functions, and loading necessary packages
+
+```{r}
+#| label: Front_Matter 
+#| include: false
+#| eval: true
+#| echo: false
+#| message: false
+packages<-function(x, repos="http://cran.r-project.org", ...){
+      x<-as.character(match.call()[[2]])
+      if (!require(x,character.only=TRUE)){
+        install.packages(pkgs=x, repos=repos, ...)
+        require(x,character.only=TRUE)
+      }
+    }
+
+base <- getwd()
+dataDIR <- paste(base, "Data", sep="/")
+    ## put your data set in the Data subdirectory
+plotDIR <- paste(base, "Figs", sep="/")
+    ## put created figures in the Figures subdirectory
+    ##setwd(base)
+
+packages(lattice)
+packages(arm)
+packages(zoo)
+    ##packages(maps)
+packages(tikzDevice)
+packages(tidyverse)
+
+packages(foreign)
+data.restore (paste(dataDIR, "visualizing.data", sep="/"))
+
+median.polish.ts <- function(data.ts, ylab="", plt=T){
+			  # median polishing for missing value imputation
+  medpolish(matrix(data.ts, ncol=12, byrow=T), eps=0.001, na.rm=T)->temp.2w
+  print(names(temp.2w))
+  year.temp <- rep(seq(start(data.ts)[1], end(data.ts)[1]), each=12)
+  month.temp <- rep(1:12, length(seq(start(data.ts)[1], end(data.ts)[1])))
+					  # plotting median polishing results
+  if (plt){
+    par(mfrow=c(2,1))
+    plot(seq(start(data.ts)[1], end(data.ts)[1]),
+    temp.2w$overall+temp.2w$row, type="l",
+    xlab="Year", ylab=ylab, main="De-seasonalized Trend")
+    plot(seq(1,12), temp.2w$overall+temp.2w$col, type="l",
+    xlab="Month", ylab=ylab, main="Seasonal Changes")
+  }
+  data.ts[is.na(data.ts)]<-temp.2w$overall +
+    temp.2w$row[year.temp[is.na(data.ts)]-start(data.ts)[1]+1]+
+    temp.2w$col[month.temp[is.na(data.ts)]]
+    data.ts[is.na(data.ts)]<-temp.2w$overall
+  invisible(data.ts)
+}
+
+## water year conversion function
+water_year <- function(d) {
+  start_year <- ifelse(as.integer(format(d, "%m")) < 10,
+    as.integer(format(d, "%Y")) - 1,
+    as.integer(format(d, "%Y"))
+    )
+  water_year <- ifelse(as.integer(format(d, "%m"))>=10,
+    as.integer(format(d, "%Y")) + 1,
+    as.integer(format(d, "%Y"))
+    )
+  return (data.frame(water_year=water_year,
+                     wy_date=as.integer(
+                       difftime(d, as.Date(paste0(start_year,
+                                                  "-10-01")),
+                                units="day")+1)))
+}
+```
+
+### Reading Maumee River Data
+
+Including initial data processing
+
+```{R}
+#| label: data_import
+#| message: false
+
+##wvldata <- as_tibble(read.csv(paste(dataDIR, "maumeedata2023.csv", sep="/"), 
+##				 header=T, stringsAsFactors=F, na.strings = "#N/A"))
+
+wvldata <- as_tibble(read.csv(paste(dataDIR, "maumeedata2024.csv", sep="/"), 
+		 header=T, stringsAsFactors=F, na.strings = "#N/A"))
+
+## names(wvldata)
+names(wvldata)<-c("Date", "QFlow", "FLOW","QTSS","TSS",
+         		      "QTP", "TP", "QSRP","SRP","QNO23",
+    		          "NO23","QTKN","TKN","QCL","CL","QSO4",
+    		          "SO4","QSI","SI","QCOND","COND")  
+
+wvldata[wvldata<0] <-  NA
+sum(wvldata$SRP > wvldata$TP, na.rm=T)
+
+wvldata$SRP[wvldata$SRP > wvldata$TP] <- NA
+wvldata$SRP[wvldata$SRP > 8] <- NA 
+    ## detection limits (Check with Nate)
+wvldata$SRP[wvldata$QSRP=="below detection" | 
+              wvldata$QSRP=="Below Detection"]<-0.0034
+wvldata$SRP[wvldata$SRP<0.0034] <- 0.0034
+wvldata$NO23[wvldata$QNO23=="below detection"] <- 0.0057  
+wvldata$NO23[wvldata$NO23<0.0057] <- 0.0057
+wvldata$Rdate <- as.Date(wvldata$Date, format="%m/%d/%Y %H:%M")
+wvldata <- wvldata[1:(dim(wvldata)[1]-1), ]
+
+## importing 2024-2025 data
+wvldata24_25 <- as_tibble(read.csv(paste(dataDIR, "maumeedata2025.csv",
+                                         sep="/"), 
+                                       header=T, stringsAsFactors=F,
+                                       na.strings = "#N/A"))
+
+wvldata24_25$Rdate <- as.Date(wvldata24_25$Date, format="%m/%d/%y")
+wvldata_addition<- wvldata24_25[wvldata24_25$Rdate > as.Date("2024-10-01"), 
+                                c(5,8:21 )]
+names(wvldata_addition)
+names(wvldata_addition) <- c("Date", "F", "CL", "NO2", "NO3","SO4",
+                             "SIO2", "NH3",  "SRP",  "TP",  "TKN",
+                             "SS",   "NPOC", "TN",   "COND")  
+```
+
+### Processing Dates
+
+```{r}
+#| label: dates
+  wvldata <- mutate(wvldata, 
+  		    Rdate = as.Date(Date, format="%m/%d/%Y %H:%M"),
+  		    Month = format(Rdate, format="%m"),
+  		    Year = format(Rdate, format="%Y"), 
+  		    julian = format(Rdate, format="%j%"),
+  		    week = format(Rdate, format="%U"))
+
+```
+
+### Finding missing days
+
+```{r}
+#| label: missing days
+#| message: false
+packages(reshape2)
+wvl.molten <- melt(as.data.frame(wvldata),
+          		     id=c("Rdate", "Month","julian","Year", "week"),
+  		             measure.vars=c("FLOW","TSS","TP","SRP","NO23","TKN")) 
+
+tmp <- wvl.molten$Year > "1981"
+
+wvl.daily <- dcast(wvl.molten[tmp,], Rdate ~ variable, mean)
+wvl.daily <- filter(wvl.daily, !is.na(Rdate))
+tmp <- range(wvl.daily$Rdate)
+date <- seq(tmp[1], tmp[2], 1)
+temp.dates <- data.frame(Rdate=date, 
+                         Month=ordered(format(date, "%b"), levels=month.abb),
+                         julian = format(date, "%j"),
+                         Year = format(date, "%Y"),
+                         week = format(date, "%U")
+                         )
+
+wvl.daily <- merge(x=wvl.daily, y=temp.dates, by="Rdate", all=T)
+wvl.daily <- mutate(wvl.daily,
+                    yrmn = format(Rdate, format="%Y-%b"),
+                    yrwk = format(Rdate, format="%Y-%U"))
+##  as_tibble(wvl.daily)
+```
+
+## Preparing for missing value imputation
+
+```{R}
+#| label: missing_impute_1
+    ## When there are more than a (calendar) month of missing values,
+    ## we use median polishing
+wvl.molten2 <- melt(wvl.daily, id=c("Rdate", "Month","julian", 
+                                    "week","Year"), 
+                    measure.vars=c("FLOW","TSS","TP","SRP","NO23","TKN"))
+
+wvl.weekly <- dcast(wvl.molten2, Year+Month ~ variable, median, na.rm=T)
+year.weeks <- tapply(wvl.weekly$TP, wvl.weekly$Year, length)
+
+##  to2 <- function(x){
+##    ## converts a single digit integer `x` to character "0x"
+##    return(ifelse (x<10, paste("0",x, sep=""), as.character(x)))
+##  }
+
+NAimpute <- function(colN, daily=as.data.frame(wvl.daily), 
+                     weekly=wvl.weekly){
+  yr.wks <- tapply(weekly[,colN], weekly$Year, length)
+  wkly <- matrix(NA, nrow=length(yr.wks), ncol=max(yr.wks))
+  for (i in 1:length(yr.wks)){
+    for (j in 1:max(yr.wks)){
+	temp <- weekly$Year==names(yr.wks)[i] & 
+	  as.numeric(weekly$Month)==j
+	if (sum(temp)>0)
+	  wkly[i,j] <- weekly[temp, colN]
+    }
+  }
+  med <- medpolish(wkly, na.rm=T)
+  tmp <- is.na(daily[,colN])
+  print(paste("Number of NAs to be imputed:", sum(tmp)))
+  if (sum(tmp)>0){
+    row.yr <- as.numeric(ordered(daily$Year))
+    col.wk <- as.numeric(daily$Month) 
+    daily[tmp, colN] <- med$overall + med$row[row.yr[tmp]] +
+                        med$col[col.wk[tmp]]    
+  }
+  return(daily[,colN])
+}
+```
+
+## Missing value imputation
+
+```{r}
+#| label: missing_impute_2
+wvl.daily <- group_by(wvl.daily, yrwk) %>%
+  mutate(TP = ifelse(is.na(TP), median(TP, na.rm=T), TP),
+         SRP = ifelse(is.na(SRP), median(SRP, na.rm=T), SRP),
+         FLOW = ifelse(is.na(FLOW), median(FLOW, na.rm=T), FLOW),
+         NO23 = ifelse(is.na(NO23), median(NO23, na.rm=T), NO23),
+         TKN = ifelse(is.na(TKN), median(TKN, na.rm=T), TKN),
+         TSS = ifelse(is.na(TSS), median(TSS, na.rm=T), TSS)) %>%
+  group_by(yrmn) %>%
+  mutate(TP = ifelse(is.na(TP), median(TP, na.rm=T), TP),
+         SRP = ifelse(is.na(SRP), median(SRP, na.rm=T), SRP),
+         FLOW = ifelse(is.na(FLOW), median(FLOW, na.rm=T), FLOW),
+         NO23 = ifelse(is.na(NO23), median(NO23, na.rm=T), NO23),
+         TKN = ifelse(is.na(TKN), median(TKN, na.rm=T), TKN),
+         TSS = ifelse(is.na(TSS), median(TSS, na.rm=T), TSS))
+
+  ##  wvl.daily$TP <- NAimpute(colN="TP")
+  ##  wvl.daily$SRP <- ifelse(wvl.daily$SRP<0, NA, wvl.daily$SRP)
+  ##  wvl.daily$SRP <- NAimpute(col="SRP")
+  wvl.daily$FLOW <- NAimpute(colN="FLOW")
+  ##  wvl.daily$NO23 <- NAimpute(col="NO23")
+  wvl.daily$TKN <- NAimpute(col="TKN")
+  ##  wvl.daily$TSS <- NAimpute(col="TSS")
+  ##    names(wvl.daily)
+  ##    wvl.daily$Yr_Mn <- format(wvl.daily$Rdate, "%m/%Y")
+  wvl.daily$TSS <- wvl.daily$TSS + 0.1 ## for 6 0s
+```
+
+## Flow Data from USGS
+
+There were at least two consequtive months of flow data missing from Heidelberg. We go directly to USGS to get daily flow data from the Waterville gauge: 04193500
+
+```{r}
+#| label: USGS_Flow
+#| fig-width: 5
+#| fig-height: 5
+#| fig-cap: "Comparison of flow data sourced from USGS and Heidelberg University"
+#| message: false
+packages(dataRetrieval)
+watervilleQ <- read_waterdata_daily(monitoring_location_id = "USGS-04193500",
+                          			    parameter_code = c("00060"))
+
+##write.csv(watervilleQ, file="waterville_Q_usgs.csv")
+watervilleQ$Rdate <- as.Date(watervilleQ$time, format="%Y-%m-%d")
+ttt <- watervilleQ$Rdate >= as.Date("1940-01-01") & 
+       watervilleQ$Rdate < as.Date("2024-10-01")
+
+sum(ttt)
+dim(wvl.daily)
+
+wvlFlow <- watervilleQ[ttt, c("Rdate", "value")]
+names(wvlFlow)[1:2] <- c("Rdate", "Flow")
+wvlFlow$Month <- format(wvlFlow$Rdate, format="%Y-%m")  
+
+tt2 <- wvlFlow$Rdate >= as.Date("1982-01-01") 
+
+## comparing data from USGS to data from Heidelberg
+##pdf(paste(plotDIR, "Heidelberg_USGS.pdf", sep="/"), height=5, width=5)
+par(mar=c(3,3,1,1), mgp=c(1.5,0.5,0), tck=-0.01)
+plot(wvlFlow$Flow[tt2] , wvl.daily$FLOW,log="xy", xlab="USGS",
+     ylab="Heidelberg")
+##dev.off()
+```
+
+The USGS data are quite different from the Heidelberg data -- inquiry needed
+
+## Precipitation Data
+
+```{r}
+#| label: precip
+maumee_precip  <- as_tibble(read.csv(paste(dataDIR, "ERA_Maumee_Daily.csv",
+                            					     sep="/"),
+                                     header=T))
+maumee_precip2  <- as_tibble(read.csv(paste(dataDIR,
+                                            "ERA_Maumee_Mon_1940_2022.csv",
+                            					     sep="/"),header=T))
+## monthly from 1940
+
+
+names(maumee_precip2)[2:3] <- c("precip_day", "precip_mon")
+names(maumee_precip)[2] <- "precip"
+maumee_precip$Year <- as.numeric(substring(maumee_precip$Date, 1, 4))
+maumee_precip$Month <- as.numeric(substring(maumee_precip$Date, 5, 6))
+maumee_precip$Day <- as.numeric(substring(maumee_precip$Date, 7, 8))
+maumee_precip$RDate <- as.Date(as.character(maumee_precip$Date),
+                      				 format="%Y%m%d")
+precip_melton <- melt(maumee_precip, id=c("RDate", "Month","Year", "Month"),
+            			     measure.var=c("precip"))
+precip_monthly <- dcast(precip_melton, Year+Month ~ variable, mean)
+
+  ## creating time-serie objects
+  ## TP
+TS_precip_daily <-  ts(maumee_precip$precip, start=c(1979,1, 1), freq=365.25)
+TS_precip_monthly <-  ts(precip_monthly$precip, start=c(1979,1), freq=12)
+TS_precip_monthly2 <-  ts(maumee_precip2$precip_day, start=c(1940,1), freq=12)
+
+```
+
+## Creating Time-Series
+
+Creating daily and monthly mean time series of variables of interest
+
+```{r}
+#| label: time_series
+      ## monthly means, try to use median and see if the outcome changes
+wvl.daily$TN <- wvl.daily$TKN + wvl.daily$NO23
+wvl.daily$SRPvTP <- wvl.daily$SRP / wvl.daily$TP
+wvl.daily$TNvTP <- wvl.daily$TN / wvl.daily$TP
+wvl.daily$SRPvTP <- wvl.daily$SRP / wvl.daily$TP
+wvl.daily$TPLoad <- wvl.daily$TP * wvl.daily$FLOW * 2.44657558 ## to kg/day
+wvl.daily$SRPLoad <- wvl.daily$SRP * wvl.daily$FLOW * 2.44657558 ## to kg/day
+wvl.daily$TNLoad <- wvl.daily$TN * wvl.daily$FLOW * 2.44657558 ## to kg/day
+wvl.daily.melton <- melt(wvl.daily, 
+                         id=c("Rdate", "Month","Year", "yrmn"),
+                         measure.var=c("FLOW", "TP","TSS","SRP","NO23","TKN",
+      					                       "TN", "SRPvTP", "TNvTP", "TPLoad",
+                                       "SRPLoad", "TNLoad"))
+
+wvl.monthly <- dcast(wvl.daily.melton, Year+Month+yrmn ~ variable, mean)
+
+      ## creating time-serie objects
+      ## TP
+TP_ts_daily <-  ts(wvl.daily$TP, start=c(1982,1, 1), freq=365.25)
+TP_ts_monthly <-  ts(wvl.monthly$TP, start=c(1982,1), freq=12)
+
+TPLoad_ts_daily <-  ts(wvl.daily$TPLoad, start=c(1982,1, 1), freq=365.25)
+TPLoad_ts_monthly <-  ts(wvl.monthly$TPLoad, start=c(1982,1), freq=12)
+      
+      ## SRP
+SRP_ts_daily <- ts(wvl.daily$SRP, start=c(1982,1,1), freq=365.25)
+SRP_ts_monthly <- ts(wvl.monthly$SRP, start=c(1982,1), freq=12)
+
+SRPLoad_ts_daily <- ts(wvl.daily$SRPLoad, start=c(1982,1, 1), freq=365.25)
+SRPLoad_ts_monthly <- ts(wvl.monthly$SRPLoad, start=c(1982,1), freq=12)
+
+  ## Flow -- in cubic meters per second
+
+Flow_ts_monthly <- ts(wvl.monthly$FLOW*0.028316847, start=c(1982,1),
+                      freq=12)
+Flow_ts_daily <-  ts(wvl.daily$FLOW*0.028316847, start=c(1982,1,1),
+                     freq=365.25)
+
+## Using USGS data from 1940-2024-10
+wvlFlow_melton <- melt(wvlFlow, id=c("Rdate","Month"),
+                       			    measure.var="Flow")
+
+wvlFlow_m <- dcast(wvlFlow_melton, Month ~ variable, mean)
+
+Flow_ts_monthly_usgs <- ts(wvlFlow_m$Flow*0.028316847, start=c(1940,1),
+                          freq=12)
+Flow_ts_daily_usgs <-  ts(wvlFlow$Flow*0.028316847, start=c(1940,1,1),
+                         freq=365.25)
+
+      ## TN
+TN_ts_monthly <- ts(wvl.monthly$TN, start=c(1982,1), freq=12)
+TN_ts_daily <-  ts(wvl.daily$TN, start=c(1982,1,1), freq=365.25)
+
+TNLoad_ts_monthly <- ts(wvl.monthly$TNLoad, start=c(1982,1), freq=12)
+TNLoad_ts_daily <-  ts(wvl.daily$TNLoad, start=c(1982,1,1), freq=365.25)
+
+  ## NO23
+NO23_ts_monthly <- ts(wvl.monthly$NO23, start=c(1982,1), freq=12)
+NO23_ts_daily <-  ts(wvl.daily$NO23, start=c(1982,1,1), freq=365.25)
+      ## TSS
+TSS_ts_monthly <- ts(wvl.monthly$TSS, start=c(1982,1), freq=12)
+TSS_ts_daily <-  ts(wvl.daily$TSS, start=c(1982,1,1), freq=365.25)
+
+      ## TNvTP
+TNvTP_ts_monthly <- ts(wvl.monthly$TNvTP, start=c(1982,1), freq=12)
+TNvTP_ts_daily <-  ts(wvl.daily$TNvTP, start=c(1982,1,1), freq=365.25)
+
+      ## DRPvTP
+DRPvTP_ts_monthly <- ts(wvl.monthly$SRPvTP, start=c(1982,1), freq=12)
+DRPvTP_ts_daily <-  ts(wvl.daily$SRPvTP, start=c(1982,1,1), freq=365.25)
+```
+
+## Saving
+
+Saving clean data for STL analysis in Part II
+
+```{r}
+#| label: saving
+#| 
+
+save(maumee_precip, maumee_precip2, TS_precip_daily, TS_precip_monthly, TS_precip_monthly2, 
+     wvlFlow, wvl.daily, file=paste(dataDIR, "savedWVL.RData", sep="/"))
+
+save(TP_ts_daily, TP_ts_monthly, TPLoad_ts_daily, TPLoad_ts_monthly, SRP_ts_daily,
+     SRP_ts_monthly, SRPLoad_ts_daily, SRPLoad_ts_monthly, Flow_ts_monthly, Flow_ts_daily, 
+     wvlFlow_melton, wvlFlow_m, Flow_ts_monthly_usgs, Flow_ts_daily_usgs, TN_ts_monthly,
+     TN_ts_daily, TNLoad_ts_monthly, TNLoad_ts_daily, NO23_ts_monthly, NO23_ts_daily,
+     TSS_ts_monthly, TSS_ts_daily, TNvTP_ts_monthly, TNvTP_ts_daily, DRPvTP_ts_monthly,
+     DRPvTP_ts_daily, file=paste(dataDIR, "savedLoadings.RData", sep="/"))
+
+```
+
+## End of Part I
